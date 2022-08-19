@@ -1,13 +1,75 @@
 package com.xxx;
 
+import org.apache.pulsar.client.api.Consumer;
+import org.apache.pulsar.client.api.Message;
+import org.apache.pulsar.client.api.MessageId;
+import org.apache.pulsar.client.api.Producer;
+import org.apache.pulsar.client.api.PulsarClient;
+import org.apache.pulsar.client.api.PulsarClientException;
+import org.apache.pulsar.client.api.SubscriptionMode;
+import org.apache.pulsar.client.api.SubscriptionType;
+import org.apache.pulsar.shade.org.apache.commons.lang3.concurrent.BasicThreadFactory;
+
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+
 /**
  * Hello world!
- *
  */
-public class App 
-{
-    public static void main( String[] args )
-    {
-        System.out.println( "Hello World!" );
+public class App {
+
+    private final static String SERVICE_URL = "pulsar://localhost:6650";
+    private final static String TOPIC       = "persistent://study/app1/topic-1";
+
+    private void createClient() throws PulsarClientException {
+        try (PulsarClient client = PulsarClient.builder().serviceUrl(SERVICE_URL).build()) {
+            System.out.println(client);
+        }
+    }
+
+    private void testProduce() {
+        try (PulsarClient client = PulsarClient.builder().serviceUrl(SERVICE_URL).build()) {
+            Producer<byte[]> producer = client.newProducer().topic(TOPIC).create();
+            MessageId messageId = producer.newMessage()
+                                          .key("msgKey1")
+                                          .value("hello".getBytes(StandardCharsets.UTF_8))
+                                          .property("p1", "v1")
+                                          .property("p2", "v2")
+                                          .send();
+            System.out.println("message id = " + messageId);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void testConsume() {
+        try {
+            PulsarClient client = PulsarClient.builder().serviceUrl(SERVICE_URL).build();
+            Consumer<byte[]> consumer = client.newConsumer()
+                                              .topic(TOPIC)
+                                              .subscriptionName("test-consumer")
+                                              .subscriptionType(SubscriptionType.Exclusive)
+                                              .subscriptionMode(SubscriptionMode.Durable)
+                                              .subscribe();
+            Message<byte[]> message = consumer.receive();
+            System.out.println("message key = " + message.getKey());
+            System.out.println("message data = " + new String(message.getData()));
+            System.out.println("message properties = " + message.getProperties());
+            consumer.acknowledge(message);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public static void main(String[] args) throws PulsarClientException {
+        App app = new App();
+        app.createClient();
+        BasicThreadFactory factory = new BasicThreadFactory.Builder().namingPattern("example-schedule-pool-%d")
+                                                                     .daemon(false).build();
+        ScheduledExecutorService executorService = new ScheduledThreadPoolExecutor(2, factory);
+        executorService.execute(app::testConsume);
+        executorService.execute(app::testProduce);
     }
 }
