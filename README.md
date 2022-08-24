@@ -200,7 +200,204 @@ persistent://study/app1/topic-1 \
 ./pulsar-client produce persistent://study/app1/topic-1 --num-produce 2 --messages "helloworld"
 ```
 
+### Apache Pulsar学习笔记06: Pulsar的Java客户端库
 
+```java
+public class App {
+
+    private final static String SERVICE_URL = "pulsar://localhost:6650";
+    private final static String TOPIC       = "persistent://study/app1/topic-1";
+
+    private void createClient() throws PulsarClientException {
+        try (PulsarClient client = PulsarClient.builder().serviceUrl(SERVICE_URL).build()) {
+            System.out.println(client);
+        }
+    }
+
+    private void testProduce() {
+        try (PulsarClient client = PulsarClient.builder().serviceUrl(SERVICE_URL).build()) {
+            Producer<byte[]> producer = client.newProducer().topic(TOPIC).create();
+            MessageId messageId = producer.newMessage()
+                                          .key("msgKey1")
+                                          .value("hello".getBytes(StandardCharsets.UTF_8))
+                                          .property("p1", "v1")
+                                          .property("p2", "v2")
+                                          .send();
+            System.out.println("message id = " + messageId);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void testConsume() {
+        try {
+            PulsarClient client = PulsarClient.builder().serviceUrl(SERVICE_URL).build();
+            Consumer<byte[]> consumer = client.newConsumer()
+                                              .topic(TOPIC)
+                                              .subscriptionName("test-consumer")
+                                              .subscriptionType(SubscriptionType.Exclusive)
+                                              .subscriptionMode(SubscriptionMode.Durable)
+                                              .subscribe();
+            Message<byte[]> message = consumer.receive();
+            System.out.println("message key = " + message.getKey());
+            System.out.println("message data = " + new String(message.getData()));
+            System.out.println("message properties = " + message.getProperties());
+            consumer.acknowledge(message);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void testBatchConsume() {
+        try {
+            PulsarClient client = PulsarClient.builder().serviceUrl(SERVICE_URL).build();
+            // batch consume
+            // 1. data size greater than 1024 * 1024
+            // 2. message count greater than 100
+            // 3. last consume interval greater than 5 seconds
+            // any of the above conditions are met, message consumption is triggered
+            Consumer<byte[]> consumer =
+                    client.newConsumer()
+                          .topic(TOPIC)
+                          .subscriptionType(SubscriptionType.Exclusive)
+                          .subscriptionName("test-batch-consumer")
+                          .subscriptionMode(SubscriptionMode.Durable)
+                          .batchReceivePolicy(BatchReceivePolicy.builder()
+                                                                .maxNumBytes(1024 * 1024)
+                                                                .maxNumMessages(100)
+                                                                .timeout(5,
+                                                                         TimeUnit.SECONDS)
+                                                                .build())
+                          .subscribe();
+
+            Messages<byte[]> messages = consumer.batchReceive();
+            for (Message<byte[]> message : messages) {
+                System.out.println("batch message key = " + message.getKey());
+                System.out.println("batch message data = " + new String(message.getData()));
+                System.out.println("batch message properties = " + message.getProperties());
+            }
+            consumer.acknowledge(messages);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public static void main(String[] args) throws PulsarClientException {
+        App app = new App();
+        app.createClient();
+        BasicThreadFactory factory = new BasicThreadFactory.Builder().namingPattern("example-schedule-pool-%d")
+                                                                     .daemon(false).build();
+        ScheduledExecutorService executorService = new ScheduledThreadPoolExecutor(3, factory);
+        executorService.execute(app::testProduce);
+        executorService.execute(app::testConsume);
+        executorService.execute(app::testBatchConsume);
+    }
+}
+```
+
+#### 3.6 死信策略
+
+> 当消费者处理消息失败时，如果消费者给了Broker否定确认(negative ack)，或者Broker在预先设置的时间内没有收到确认ACK，Broker可以将消息重新发送给消息者。 这就相当于"重试"逻辑，如果重试成功，消息会被正常消费。但总会有重试无法成功的情况，因此不能无限的重试下去。
+>
+> 关于消费者处理消息时的异常处理有以下三种选择:
+>
+> - 第一种方法是捕获任何异常，无论是否发生异常都简单地确认这些消息已成功处理，这实际上是忽略了处理失败的消息。这种方法只适用于业务上允许消息丢失的场景。
+> - 第二种方法是上面说的无限重试，消息处理成功发确认ACK，消息处理失败捕获异常时发送否定确认(negative ack)。这种方法可能会导致失败消息的无限重新传递循环，可能会引起消息堵塞，导致后边的消息无法被消费。
+> - 第三种方法是将有问题的消息路由到一个单独的主题，称为死信主题（Dead Letter Topic)。这样就能避免无限的重新传递循环引起消息堵塞，同时死信主题中保留的消息可以在后续进行进一步有程序自动处理或者人工检查和处理。
+
+```java
+Consumer consumer = client.newConsumer()
+    .topic("persistent://study/app1/topic-1")
+    .subscriptionName("sub5")
+    .deadLetterPolicy(DeadLetterPolicy.builder()
+    .maxRedeliverCount(10)
+    .deadLetterTopic("persistent://study/app1/dlt-1"”))
+    .subscribe();
+```
+
+### Apache Pulsar学习笔记07: Pulsar的Go客户端库
+
+```go
+var url = "pulsar://127.0.0.1:6650"
+var topic = "persistent://study/app1/topic-1"
+
+func newPulsarClient() (pulsar.Client, error) {
+	return pulsar.NewClient(pulsar.ClientOptions{
+		URL:               url,
+		OperationTimeout:  30 * time.Second,
+		ConnectionTimeout: 30 * time.Second,
+	})
+}
+
+func startConsumer() {
+	client, err := newPulsarClient()
+	if err != nil {
+		panic("error create consumer client")
+	}
+	defer client.Close()
+
+	consumer, err := client.Subscribe(pulsar.ConsumerOptions{
+		Topic:            topic,
+		SubscriptionName: "sub-2",          // 订阅名称
+		Type:             pulsar.Exclusive, // 订阅类型: 独占模式
+		DLQ: &pulsar.DLQPolicy{},
+	})
+	if err != nil {
+		panic("error subscribe pulsar")
+	}
+	defer consumer.Close()
+
+	for {
+		msg, _ := consumer.Receive(context.Background())
+		if err := processMsg(msg); err != nil {
+			consumer.Nack(msg)
+		} else {
+			consumer.Ack(msg)
+		}
+
+	}
+}
+
+func processMsg(msg pulsar.Message) error {
+	fmt.Printf("consume: %s \n", msg.Payload())
+	return nil
+}
+
+func startProducer() {
+	client, err := pulsar.NewClient(pulsar.ClientOptions{
+		URL:               url,
+		OperationTimeout:  30 * time.Second,
+		ConnectionTimeout: 30 * time.Second,
+	})
+	if err != nil {
+		panic("error create producer")
+	}
+	defer client.Close()
+
+	producer, err := client.CreateProducer(pulsar.ProducerOptions{
+		Name:  "TestProducer-Go",
+		Topic: topic,
+	})
+	defer producer.Close()
+	msg := &pulsar.ProducerMessage{
+		Key:     "msgKey1",
+		Payload: []byte("hello go"),
+		Properties: map[string]string{
+			"p1": "v1",
+			"p2": "v2",
+		},
+	}
+	msgID, err := producer.Send(context.Background(), msg)
+	fmt.Println(msgID)
+}
+
+func main() {
+	startProducer()
+	startConsumer()
+}
+```
+
+### Apache Pulsar学习笔记08: 使用Pulsar Schema管理消息数据的类型安全性
 
 
 

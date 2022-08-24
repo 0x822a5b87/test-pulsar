@@ -29,6 +29,7 @@ func startConsumer() {
 		Topic:            topic,
 		SubscriptionName: "sub-2",          // 订阅名称
 		Type:             pulsar.Exclusive, // 订阅类型: 独占模式
+		DLQ:              &pulsar.DLQPolicy{},
 	})
 	if err != nil {
 		panic("error subscribe pulsar")
