@@ -399,17 +399,353 @@ func main() {
 
 ### Apache Pulsar学习笔记08: 使用Pulsar Schema管理消息数据的类型安全性
 
+> 大部分主流的消息队列的类型安全基本都是基于生产者指定序列化，消费者指定反序列化来决定的。例如kafka的是通过：
+>
+> ```java
+> props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringSerializer");
+> props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, "com.baeldung.kafka.serdes.CustomSerializer");
+> ```
+>
+> 而大部分消息队列这个数据是不存在服务端的，也就是存在用户传错的可能性。
+>
+> **pulsar 支持了这种序列化方式，同时还提供了一种服务端的方法即Pulsar Schema**
+>
+> Pulsar有一个内置的Schema Registry，允许客户端为每个Topic上传消息数据的Schema。这样Producer和Consumer就可以通知Pulsar要通过Topic传输什么类型的数据。 使用Schema，Pulsar可以强制执行类型安全，确保生产者和消费者保持同步，客户端不需要再手动进行消息的序列化和反序列化，而由Pulsar Schema在后台执行这些操作。
+
+#### schema
+
+> 在golang中schema如下
+
+```go
+type SchemaInfo struct {
+	Name       string
+	Schema     string
+	Type       SchemaType
+	Properties map[string]string
+}
+```
+
+> 在java中schema如下
+
+```java
+@InterfaceAudience.Public
+@InterfaceStability.Stable
+public interface SchemaInfo {
+
+    String getName();
+
+    /**
+     * The schema data in AVRO JSON format.
+     */
+    byte[] getSchema();
+
+    /**
+     * The type of schema (AVRO, JSON, PROTOBUF, etc..).
+     */
+    SchemaType getType();
+
+    /**
+     * Additional properties of the schema definition (implementation defined).
+     */
+    Map<String, String> getProperties();
+
+    String getSchemaDefinition();
+
+    static SchemaInfoBuilder builder() {
+        return new SchemaInfoBuilder();
+    }
+}
+```
 
 
 
+#### consumer
 
+```java
+public class OrderConsumer {
+    public static void main(String[] args) throws PulsarClientException {
+        PulsarClient client = PulsarClient.builder().serviceUrl(App.SERVICE_URL).build();
+        Consumer<Order> consumer = client.newConsumer(Schema.JSON(Order.class))
+                                         .topic(OrderProducer.ORDER_TOPIC)
+                                         .subscriptionName(OrderProducer.ORDER_TOPIC + "_" + OrderConsumer.class.getSimpleName())
+                                         .subscribe();
+        Message<Order> message = consumer.receive();
+        System.out.println("consume message : " + message.getValue());
+        consumer.acknowledge(message);
+    }
+}
+```
 
+#### producer
 
+```java
+public class OrderProducer {
 
+    public static final String ORDER_TOPIC = "persistent://study/app1/topic-with-schema-order";
 
+    public static void main(String[] args) throws PulsarClientException {
+        PulsarClient client = PulsarClient.builder().serviceUrl(App.SERVICE_URL).build();
+        Producer<Order> producer = client.newProducer(Schema.JSON(Order.class))
+                                         .topic(ORDER_TOPIC)
+                                         .create();
+        Order order = new Order();
+        order.setOrderId("1");
+        order.setOrderName("1");
+        MessageId id = producer.send(order);
+        producer.close();
+        System.out.println("produce order message : " + id);
+    }
+}
+```
 
+#### order
 
+```java
+public class Order {
+    private String orderId;
+    private String orderName;
 
+    public String getOrderId() {
+        return orderId;
+    }
+
+    public void setOrderId(String orderId) {
+        this.orderId = orderId;
+    }
+
+    public String getOrderName() {
+        return orderName;
+    }
+
+    public void setOrderName(String orderName) {
+        this.orderName = orderName;
+    }
+
+    @Override
+    public String toString() {
+        return new ToStringBuilder(this)
+                .append("orderId", orderId)
+                .append("orderName", orderName)
+                .toString();
+    }
+}
+```
+
+#### 查看 schema
+
+```bash
+./bin/pulsar-admin schemas get persistent://study/app1/topic-with-schema-order
+```
+
+```json
+{
+  "version": 0,
+  "schemaInfo": {
+    "name": "topic-with-schema-order",
+    "schema": {
+      "type": "record",
+      "name": "Order",
+      "namespace": "com.xxx.schema",
+      "fields": [
+        {
+          "name": "orderId",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        {
+          "name": "orderName",
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      ]
+    },
+    "type": "JSON",
+    "properties": {
+      "__alwaysAllowNull": "true",
+      "__jsr310ConversionEnabled": "false"
+    }
+  }
+}
+```
+
+### Apache Pulsar学习笔记09: Pulsar的Web图形化管理工具Pulsar Manager
+
+> 启动 pulsar manager
+
+```bash
+docker pull apachepulsar/pulsar-manager:v0.2.0
+
+docker volume create pulsar-manager-data
+
+docker run -d \
+    -v pulsar-manager-data:/pulsar-manager/pulsar-manager/dbdata \
+    -p 9527:9527 -p 7750:7750 \
+    -e SPRING_CONFIGURATION_FILE=/pulsar-manager/pulsar-manager/application.properties \
+    --name pulsar-manager \
+    apachepulsar/pulsar-manager:v0.2.0
+```
+
+> 设置账号密码为 `admin` && `apachepulsar`
+
+```bash
+CSRF_TOKEN=$(curl http://localhost:7750/pulsar-manager/csrf-token)
+curl \
+   -H 'X-XSRF-TOKEN: $CSRF_TOKEN' \
+   -H 'Cookie: XSRF-TOKEN=$CSRF_TOKEN;' \
+   -H "Content-Type: application/json" \
+   -X PUT http://localhost:7750/pulsar-manager/users/superuser \
+   -d '{"name": "admin", "password": "apachepulsar", "description": "test", "email": "username@test.org"}'
+```
+
+> 在 **http://127.0.0.1:9527** 访问 UI，注意，由于是在docker中启动，所以：
+>
+> 1. 如果 pulsar 也是在docker中启动，则pulsar要么暴露端口到物理机，要么和 pulsar manager 在一个UI地址中；
+> 2. 如果 pulsar 不在docker中启动，在macos上需要通过 `docker.for.mac.localhost` 来访问；
+
+### Apache Pulsar学习笔记11: 使用分区Topic
+
+> 1. **在Pulsar中一个Topic只能由一个Broker提供服务**
+> 2. Pulsar`通过分区Topic来提高吞吐量`，分区Topic在底层通过N个内部Topic实现，N就是分区的数量。
+> 3. 每个分区(内部的Topic)还是由一个Broker提供服务
+
+![pulsar-topic-partitioning](img/example/pulsar-topic-partitioning.png)
+
+#### 路由模式
+
+> 对于没有提供key的情况下，有三种路由策略：
+>
+> 1. `SinglePartition` 连接到某个特定的分区，并将该producer所有的数据写入该分区；
+> 2. `RoundRobinPartition` 轮询将数据写入随机的分区；
+> 3. `CustomPartition` 按照用户自定义选择分区；
+>
+> 对于提供key的情况下：
+>
+> 1.  `SinglePartition` 和 `RoundRobinPartition` 按照key的hash选择分区，也就是说具有相同key的消息会写入相同的分区；
+
+#### 使用路由模式
+
+> 使用 `SinglePartition`
+
+```java
+Producer<byte[]> producer = pulsarClient.newProducer()
+        .topic(topic)
+        .messageRoutingMode(MessageRoutingMode.SinglePartition)
+        .create();
+producer.send("Partitioned topic message".getBytes());
+```
+
+> 自定义 `MessageRouter`
+
+```java
+Producer<byte[]> producer = client.newProducer().topic("persistent://study/app1/topic-4").messageRouter(new MessageRouter() {
+    @Override
+    public int choosePartition(Message<?> msg, TopicMetadata metadata) {
+        return 0; // 所有消息都被发送到分区0
+    }
+}).create();
+```
+
+### Apache Pulsar学习笔记12: 开启基于JWT的身份认证
+
+#### 身份认证相关的概念
+
+> 当前Pulsar支持以下身份验证提供者:
+>
+> - TLS认证
+> - Athenz
+> - Kerberos
+> - JWT认证
+
+#### 开启JWT Token认证
+
+>JWT支持通过两种不同的秘钥生成和验证Token：
+>
+>- 对称秘钥：
+>  - 使用单个Secret key来生成和验证Token
+>- 非对称秘钥：包含由私钥和公钥组成的一对密钥
+>  - 使用Private key生成Token
+>  - 使用Public key验证Token
+
+> 创建秘钥
+
+```bash
+./bin/pulsar tokens create-key-pair --output-private-key ./conf/jwt-private.key --output-public-key ./conf/jwt-public.key
+```
+
+> 使用 `private-key` 来创建 `admin` 的 `token`
+
+```bash
+./bin/pulsar tokens create --private-key ./conf/jwt-private.key --subject admin
+```
+
+> 再使用 `private-key` 创建 `test-user` 的 `token`
+
+```bash
+./bin/pulsar tokens create --private-key ./conf/jwt-private.key --subject test-user
+```
+
+> 现在我们拥有角色 `admin` 和 `test-user`，我们需要对这些角色进行授权。
+>
+> 下面我们为角色 `test-user` 对 `study/app1` 的 `namespace` 进行 `produce` 以及 `consume` 的授权。
+
+```bash
+./bin/pulsar-admin namespaces grant-permission study/app1 --role test-user --actions produce,consume
+```
+
+> 现在我们修改 conf 文件来开启权限验证，要让Broker开启认证只需要在`broker.conf`配置文件中添加如下的配置:
+>
+> 这里需要注意的是，因为我们是 `admin` 用户，所以需要使用 admin 用户的生成的 toekn。
+>
+> 另外还有一点，如果我们是在本地启动 `standalone`，那么我们应该修改 `./conf/standalone.conf`。
+
+```properties
+## 启用认证和鉴权
+authenticationEnabled=true
+authorizationEnabled=true
+authenticationRefreshCheckSeconds=60
+authenticationProviders=org.apache.pulsar.broker.authentication.AuthenticationProviderToken
+
+# 设置Broker自身的认证, Broker连接其他Broker时用到
+brokerClientAuthenticationPlugin=org.apache.pulsar.client.impl.auth.AuthenticationToken
+brokerClientAuthenticationParameters={"token":"eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhZG1pbiJ9.W5h3Y8p9ATSNcQEN9a6v47y5A1ReNHS8gST2B3LwcJfzzFcXtixfIRVdS0AeijsYyeZ14m1ZGvaoULzgqHYIXKqKxNL-g9vfpR_wX3reVplArD2lJsV5ttHzOK0riDi2PHVtvkv9mHIEO6s-AWNZ3vPGpL_EvLtSbSZmiPLN5_wWAwiGgMo1amikDD5ouh5pJYdOB01wMzUrKH_xvhYgWrgIHHmPIG6diDPT4glZ66YdgsAvOOfDLiVxkk7HmeM2P2U4JU6TVgWDxRh7IDeD7uN_o-tq4ayCQ_6db0Axsv4UiVPE4_Tza-ptXMWGdATS0tO-08l_PAnzZDAfx6m0Cg"}
+
+authenticateOriginalAuthData=true
+
+superUserRoles=admin
+tokenPublicKey=./conf/jwt-public.key
+```
+
+##### 配置命令行工具
+
+> 开启验证之后，我们需要修改 `./conf/client.conf` 为我们的请求增加鉴权。这里我们 `client` 使用的角色还是 `admin`：
+
+```properties
+webServiceUrl=http://localhost:8080/
+brokerServiceUrl=pulsar://localhost:6650/
+authPlugin=org.apache.pulsar.client.impl.auth.AuthenticationToken
+authParams={"token":"eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhZG1pbiJ9.W5h3Y8p9ATSNcQEN9a6v47y5A1ReNHS8gST2B3LwcJfzzFcXtixfIRVdS0AeijsYyeZ14m1ZGvaoULzgqHYIXKqKxNL-g9vfpR_wX3reVplArD2lJsV5ttHzOK0riDi2PHVtvkv9mHIEO6s-AWNZ3vPGpL_EvLtSbSZmiPLN5_wWAwiGgMo1amikDD5ouh5pJYdOB01wMzUrKH_xvhYgWrgIHHmPIG6diDPT4glZ66YdgsAvOOfDLiVxkk7HmeM2P2U4JU6TVgWDxRh7IDeD7uN_o-tq4ayCQ_6db0Axsv4UiVPE4_Tza-ptXMWGdATS0tO-08l_PAnzZDAfx6m0Cg"}
+```
+
+#### Pulsar的Java和Go客户端
+
+```java
+PulsarClient client = PulsarClient.builder()
+    .serviceUrl("pulsar://broker.example.com:6650/")
+    .authentication(
+        AuthenticationFactory.token("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0LXVzZXIifQ.ZXbMZ4OTXgJFN5tmw8jLd43spaiDYjbd4lmGTLd2_ge0C3V_lVsyv1VSGC5NNn5cik1rkQTS6dRHQ_GzczCCNNdvKr2z5zEFnCdqO8dRtFXliXALMwpno7epctKHa9TvRzozkmYw3zIKCXdjK9WEKkROyiJmqpCrKUOqXiEYH_oFMgBGAacy8VAkjSQlU8BhXGPhnKvLNolH41XRIkHP5EMcxaOC7NPQjDD-oucH2iCnz4AftBhGmredNBzReztZYN0-RvHCS-dwWwwrqO1Zxlnh1BfTSQblEkTMtaG_qiqRNg_gD6CGCp2oJdcv_p2pndgPmgPIuYpIGpgVP_HXGQ")）
+    .build();
+```
+
+```go
+client, err := NewClient(ClientOptions{
+    URL:            "pulsar://localhost:6650",
+    Authentication: NewAuthenticationToken("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0LXVzZXIifQ.ZXbMZ4OTXgJFN5tmw8jLd43spaiDYjbd4lmGTLd2_ge0C3V_lVsyv1VSGC5NNn5cik1rkQTS6dRHQ_GzczCCNNdvKr2z5zEFnCdqO8dRtFXliXALMwpno7epctKHa9TvRzozkmYw3zIKCXdjK9WEKkROyiJmqpCrKUOqXiEYH_oFMgBGAacy8VAkjSQlU8BhXGPhnKvLNolH41XRIkHP5EMcxaOC7NPQjDD-oucH2iCnz4AftBhGmredNBzReztZYN0-RvHCS-dwWwwrqO1Zxlnh1BfTSQblEkTMtaG_qiqRNg_gD6CGCp2oJdcv_p2pndgPmgPIuYpIGpgVP_HXGQ"),
+})
+```
 
 
 

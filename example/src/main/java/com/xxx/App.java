@@ -22,8 +22,8 @@ import java.util.concurrent.TimeUnit;
  */
 public class App {
 
-    private final static String SERVICE_URL = "pulsar://localhost:6650";
-    private final static String TOPIC       = "persistent://study/app1/topic-1";
+    public final static String SERVICE_URL = "pulsar://localhost:6650";
+    public final static String TOPIC       = "persistent://study/app1/topic-1";
 
     private void createClient() throws PulsarClientException {
         try (PulsarClient client = PulsarClient.builder().serviceUrl(SERVICE_URL).build()) {
